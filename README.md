@@ -1,6 +1,8 @@
 # CapsLockSwitcher for macOS
 
-[![macOS](https://img.shields.io/badge/macOS-13.0+-blue.svg)](https://www.apple.com/macos)
+A fork of [doasync/CapsLockSwitcher](https://github.com/doasync/CapsLockSwitcher) that also includes [cofob's fork](https://github.com/cofob/CapsLockSwitcher) (Command + Caps Lock, unsandboxed build, CI releases). On top of that, Caps Lock is caught with a system hot key instead of an event tap, so switching keeps working while any app holds Secure Input, and the app no longer needs Accessibility permission.
+
+[![macOS](https://img.shields.io/badge/macOS-15.2+-blue.svg)](https://www.apple.com/macos)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE.md)
 
 **CapsLockSwitcher** is a lightweight macOS background agent that provides **instant, reliable switching between exactly two user-selected keyboard input sources (layouts) using the Caps Lock key**.
@@ -23,22 +25,22 @@ CapsLockSwitcher solves these problems by providing a dedicated, fast, and targe
 *   🚀 **Instant Switching:** Bypasses the standard macOS input source switching delay by remapping Caps Lock to a dedicated key at the HID level.
 *   🎯 **User-Selectable Layouts:** Switches *only* between the two keyboard layouts you explicitly choose in its menu.
 *   🔒 **Works under Secure Input:** Uses a system hot key (Carbon `RegisterEventHotKey`), which WindowServer keeps delivering while Secure Event Input is on. Event-tap based switchers go deaf whenever an app (a password field, a browser, an Electron app, or a stuck `loginwindow`) holds Secure Input.
-*   🔠 **UPPERCASE when you want it:** Hold Caps Lock (0.4 s) or press Shift + Caps Lock to lock uppercase; press Caps Lock again to release it. Both options can be turned off in the menu.
+*   🔠 **UPPERCASE when you want it:** Hold Caps Lock (0.4 s), or press Shift + Caps Lock or Command + Caps Lock (either Command key) to lock uppercase; press Caps Lock again to release it. Each option can be turned off in the menu.
 *   🙅 **No permissions needed:** No Accessibility or Input Monitoring prompts.
 *   🩹 **Self-healing:** Re-applies the Caps Lock remap after sleep, screen unlock or user switch, and checks it every 30 seconds. Reverts the remap synchronously on quit so Caps Lock is never left dead.
 *   💡 **Lightweight & Native:** Runs as a background agent with no Dock icon. No kernel extensions or drivers.
 *   🚦 **Status Bar Icon:** Shows the state (Active, Configuring, hot key unavailable) and whether Secure Input is currently on.
-*   🚀 **Launch on Startup:** Optional setting to automatically start the app when you log in (macOS 13+ required).
+*   🚀 **Launch on Startup:** Optional setting to automatically start the app when you log in.
 
 ## Installation
 
 ### Recommended
 
-1.  Go to the [**Releases**](https://github.com/doasync/CapsLockSwitcher/releases) page of this repository. 
-2.  Download the latest `.app` file.
+1.  Go to the [**Releases**](../../releases) page of this repository. Releases are universal Intel and Apple Silicon builds, published by GitHub Actions for every `v*` tag. They are ad-hoc signed, not notarized.
+2.  Download `CapsLockSwitcher.app.zip` from the latest release and unzip it.
 3.  Copy `CapsLockSwitcher.app` to your `/Applications` folder.
-4.  Launch `CapsLockSwitcher` from your Applications folder.
-5.  Run `xattr -cr /Applications/CapsLockSwitcher.app` in the terminal
+4.  Run `xattr -cr /Applications/CapsLockSwitcher.app` in the terminal.
+5.  Launch `CapsLockSwitcher` from your Applications folder.
 
 `xattr -cr /Applications/CapsLockSwitcher.app` removes extended attributes recursively (`-r`) and clears code signing attributes (`-c`) from the `CapsLockSwitcher.app` application. It's essentially stripping away the "downloaded from the internet" flags that macOS Gatekeeper uses to restrict the app's execution.
 
@@ -64,15 +66,15 @@ The script compiles a universal (arm64 + x86_64) app with the Command Line Tools
 4.  **Activate Switching:**
     *   Once two layouts are selected, the status bar icon will change to ⌨️ (`keyboard.fill`), and the status text will show "Switcher: Active".
     *   **Press the Caps Lock key!** It will now instantly switch between the two layouts you selected.
-    *   **Need uppercase?** Hold Caps Lock or press Shift + Caps Lock. Press Caps Lock again to turn it off.
+    *   **Need uppercase?** Hold Caps Lock, or press Shift + Caps Lock or Command + Caps Lock. Press Caps Lock again to turn it off.
 5.  **(Optional) Launch on Startup:**
     *   Click the status bar icon.
-    *   Select "Launch on Startup" to toggle the setting (requires macOS 13+). A checkmark indicates it's enabled.
+    *   Select "Launch on Startup" to toggle the setting. A checkmark indicates it's enabled.
 
 ## How it works
 
 1.  `hidutil` remaps Caps Lock to the `LANG1` key (`0x700000090`), which macOS delivers as `kVK_JIS_Kana`. On non-Japanese layouts that key does nothing by itself, and it has none of the native Caps Lock delay.
-2.  A Carbon hot key on `kVK_JIS_Kana` toggles between your two layouts with `TISSelectInputSource`. A second hot key with Shift, or holding the key, sets the real Caps Lock state through `IOHIDSetModifierLockState`.
+2.  A Carbon hot key on `kVK_JIS_Kana` toggles between your two layouts with `TISSelectInputSource`. Hot keys with Shift or Command, or holding the key, set the real Caps Lock state through `IOHIDSetModifierLockState` (`CapsLockController`).
 3.  When you quit the app, Caps Lock is mapped back to itself.
 
 ## Troubleshooting
@@ -82,3 +84,18 @@ The script compiles a universal (arm64 + x86_64) app with the Command Line Tools
     *   **Hot key unavailable:** If the menu shows this, another app has grabbed the same key. Quit it, then reopen the menu to retry.
     *   **Restart the App:** Quit CapsLockSwitcher (via its menu) and relaunch it.
 *   **Caps Lock does nothing after the app crashed:** Run `hidutil property --set '{"UserKeyMapping":[]}'` or simply relaunch the app.
+
+## Building from Source
+
+1.  Clone this repository.
+2.  **Without Xcode:** run `./build.sh` (Command Line Tools are enough), as described in [Installation](#build-from-source-no-xcode-needed).
+3.  **With Xcode:** open `CapsLockSwitcher.xcodeproj`, select the `CapsLockSwitcher` target and your Mac as the run destination, then build (Product > Build or Cmd+B).
+4.  `swiftc CapsLockSwitcher/CapsLockController.swift Tests/CapsLockToggle/main.swift -o build/check-caps-lock && build/check-caps-lock` checks that the app can toggle Caps Lock (the state is restored afterwards).
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or suggestions.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.

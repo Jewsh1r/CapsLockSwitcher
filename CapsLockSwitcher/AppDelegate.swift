@@ -1,7 +1,5 @@
 import Cocoa
 import Carbon.HIToolbox
-import IOKit
-import IOKit.hidsystem
 import ServiceManagement
 import OSLog
 
@@ -61,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let selectedSourceID2 = "selectedSourceID2"
         static let hasShownWelcome = "hasShownWelcome"
         static let capsLockViaShift = "capsLockViaShift"
+        static let capsLockViaCommand = "capsLockViaCommand"
         static let capsLockViaHold = "capsLockViaHold"
         static let didMigrateSandboxPrefs = "didMigrateSandboxPrefs"
     }
@@ -68,8 +67,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     fileprivate static let hotKeySignature: OSType = 0x434C_5357 // 'CLSW'
 
     private enum HotKeyID: UInt32 {
-        case switchLayout = 1     // Caps Lock
-        case toggleCapsLock = 2   // Shift + Caps Lock
+        case switchLayout = 1         // Caps Lock
+        case capsLockWithShift = 2    // Shift + Caps Lock
+        case capsLockWithCommand = 3  // Command + Caps Lock (either Command key)
     }
 
     private let hidCapsLockUsage = 0x700000039
@@ -101,20 +101,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var isHidRemappingApplied: Bool = false
         var hotKeyHandler: EventHandlerRef? = nil
         var switchHotKey: EventHotKeyRef? = nil
-        var capsLockHotKey: EventHotKeyRef? = nil
+        var capsLockHotKeys: [UInt32: EventHotKeyRef] = [:]
         var hotKeyError: OSStatus? = nil
     }
     fileprivate var state = AppState()
 
+    private let capsLockController = CapsLockController()
+
     // Hold-to-Caps-Lock tracking
     private var triggerDownAt: Date?
     private var holdWorkItem: DispatchWorkItem?
+    // Modifier + Caps Lock hot keys currently held, so key repeat doesn't toggle uppercase back and forth
+    private var capsLockHotKeysDownAt: [UInt32: Date] = [:]
 
     private var remapCheckTimer: Timer?
 
     private var capsLockViaShift: Bool {
         get { UserDefaults.standard.object(forKey: PrefKeys.capsLockViaShift) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: PrefKeys.capsLockViaShift) }
+    }
+
+    private var capsLockViaCommand: Bool {
+        get { UserDefaults.standard.object(forKey: PrefKeys.capsLockViaCommand) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: PrefKeys.capsLockViaCommand) }
     }
 
     private var capsLockViaHold: Bool {
@@ -288,22 +297,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        if capsLockViaShift {
-            if state.capsLockHotKey == nil {
+        let capsLockHotKeys: [(id: HotKeyID, modifiers: Int, enabled: Bool)] = [
+            (.capsLockWithShift, shiftKey, capsLockViaShift),
+            (.capsLockWithCommand, cmdKey, capsLockViaCommand)
+        ]
+        for hotKey in capsLockHotKeys {
+            let id = hotKey.id.rawValue
+            if hotKey.enabled, state.capsLockHotKeys[id] == nil {
+                var ref: EventHotKeyRef?
                 let status = RegisterEventHotKey(
-                    triggerKeyCode, UInt32(shiftKey),
-                    EventHotKeyID(signature: AppDelegate.hotKeySignature, id: HotKeyID.toggleCapsLock.rawValue),
-                    GetApplicationEventTarget(), 0, &state.capsLockHotKey
+                    triggerKeyCode, UInt32(hotKey.modifiers),
+                    EventHotKeyID(signature: AppDelegate.hotKeySignature, id: id),
+                    GetApplicationEventTarget(), 0, &ref
                 )
-                if status != noErr {
+                if status == noErr, let ref = ref {
+                    state.capsLockHotKeys[id] = ref
+                } else {
                     // Not fatal: plain Caps Lock switching still works.
-                    Logger.hotKey.error("RegisterEventHotKey (Shift + Caps Lock) failed: \(status)")
-                    state.capsLockHotKey = nil
+                    Logger.hotKey.error("RegisterEventHotKey (modifier \(hotKey.modifiers) + Caps Lock) failed: \(status)")
                 }
+            } else if !hotKey.enabled, let ref = state.capsLockHotKeys.removeValue(forKey: id) {
+                UnregisterEventHotKey(ref)
             }
-        } else if let ref = state.capsLockHotKey {
-            UnregisterEventHotKey(ref)
-            state.capsLockHotKey = nil
         }
     }
 
@@ -312,10 +327,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             UnregisterEventHotKey(ref)
             state.switchHotKey = nil
         }
-        if let ref = state.capsLockHotKey {
+        for ref in state.capsLockHotKeys.values {
             UnregisterEventHotKey(ref)
-            state.capsLockHotKey = nil
         }
+        state.capsLockHotKeys.removeAll()
+        capsLockHotKeysDownAt.removeAll()
         holdWorkItem?.cancel()
         holdWorkItem = nil
         triggerDownAt = nil
@@ -327,8 +343,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch HotKeyID(rawValue: id) {
         case .switchLayout:
             pressed ? triggerPressed() : triggerReleased()
-        case .toggleCapsLock:
-            if pressed { setCapsLock(!isCapsLockOn()) }
+        case .capsLockWithShift, .capsLockWithCommand:
+            if !pressed {
+                capsLockHotKeysDownAt[id] = nil
+            } else if capsLockHotKeysDownAt[id].map({ Date().timeIntervalSince($0) >= 2 }) ?? true {
+                // Same 2 s expiry as the plain trigger, in case a release event was lost.
+                capsLockHotKeysDownAt[id] = Date()
+                setCapsLock(!isCapsLockOn())
+            }
         case nil:
             break
         }
@@ -393,37 +415,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Caps Lock State (IOHIDSystem)
 
-    private func withHIDSystemConnection<T>(_ body: (io_connect_t) -> T?) -> T? {
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
-        guard service != IO_OBJECT_NULL else {
-            Logger.hid.error("IOHIDSystem service not found.")
-            return nil
-        }
-        defer { IOObjectRelease(service) }
-
-        var connect: io_connect_t = 0
-        let result = IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &connect)
-        guard result == KERN_SUCCESS else {
-            Logger.hid.error("IOServiceOpen(IOHIDSystem) failed: \(result)")
-            return nil
-        }
-        defer { IOServiceClose(connect) }
-        return body(connect)
-    }
-
     private func isCapsLockOn() -> Bool {
-        withHIDSystemConnection { connect -> Bool? in
-            var on = false
-            return IOHIDGetModifierLockState(connect, Int32(kIOHIDCapsLockState), &on) == KERN_SUCCESS ? on : nil
-        } ?? false
+        capsLockController.isOn ?? false
     }
 
     private func setCapsLock(_ on: Bool) {
-        let result = withHIDSystemConnection { connect in
-            IOHIDSetModifierLockState(connect, Int32(kIOHIDCapsLockState), on)
-        }
+        let result = capsLockController.set(on)
         if result != KERN_SUCCESS {
-            Logger.hid.error("IOHIDSetModifierLockState(\(on)) failed: \(String(describing: result))")
+            Logger.hid.error("IOHIDSetModifierLockState(\(on)) failed: \(result)")
         }
     }
 
@@ -544,7 +543,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             3. Press Caps Lock to instantly toggle between them.
 
-            Need UPPERCASE? Hold Caps Lock or press Shift + Caps Lock. Press Caps Lock again to release it.
+            Need UPPERCASE? Hold Caps Lock, or press Shift + Caps Lock or ⌘ + Caps Lock. Press Caps Lock again to release it.
             """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
@@ -567,6 +566,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleCapsLockViaShift(_ sender: NSMenuItem) {
         capsLockViaShift.toggle()
         determineStateAndSetupUI(context: "CapsLockViaShiftToggled")
+    }
+
+    @objc func toggleCapsLockViaCommand(_ sender: NSMenuItem) {
+        capsLockViaCommand.toggle()
+        determineStateAndSetupUI(context: "CapsLockViaCommandToggled")
     }
 
     @objc func toggleCapsLockViaHold(_ sender: NSMenuItem) {
@@ -623,6 +627,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shiftItem.target = self
         shiftItem.state = capsLockViaShift ? .on : .off
         appMenu?.addItem(shiftItem)
+
+        let commandItem = NSMenuItem(title: "⌘ + Caps Lock → UPPERCASE", action: #selector(toggleCapsLockViaCommand(_:)), keyEquivalent: "")
+        commandItem.target = self
+        commandItem.state = capsLockViaCommand ? .on : .off
+        appMenu?.addItem(commandItem)
 
         let holdItem = NSMenuItem(title: "Hold Caps Lock → UPPERCASE", action: #selector(toggleCapsLockViaHold(_:)), keyEquivalent: "")
         holdItem.target = self
