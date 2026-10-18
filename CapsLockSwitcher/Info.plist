@@ -13,19 +13,15 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>2.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string> <!-- e.g., 11.0 or later recommended for TIS/EventTap -->
 
     <!-- Agent Configuration -->
     <key>LSUIElement</key>
     <true/>
-
-    <!-- Permissions -->
-    <key>NSAccessibilityUsageDescription</key>
-    <string>CapsLockSwitcher needs to monitor keyboard events (only Caps Lock) to instantly switch between your chosen input sources. It does not log or store your typing.</string>
 
     <!-- Optional: Prevent unexpected termination -->
     <key>NSSupportsSuddenTermination</key>
