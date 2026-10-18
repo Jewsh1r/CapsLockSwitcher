@@ -34,7 +34,13 @@ CapsLockSwitcher solves these problems by providing a dedicated, fast, and targe
 
 ## Installation
 
-### Recommended
+### Homebrew
+
+```sh
+brew install --cask jewsh1r/tap/capslockswitcher
+```
+
+### Manual
 
 1.  Go to the [**Releases**](../../releases) page of this repository. Releases are universal Intel and Apple Silicon builds, published by GitHub Actions for every `v*` tag. They are ad-hoc signed, not notarized.
 2.  Download `CapsLockSwitcher.app.zip` from the latest release and unzip it.
