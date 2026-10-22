@@ -40,6 +40,8 @@ CapsLockSwitcher solves these problems by providing a dedicated, fast, and targe
 brew install --cask jewsh1r/tap/capslockswitcher
 ```
 
+Homebrew 7 flags casks from third-party taps as untrusted. To keep `brew upgrade` loading this one, trust just this cask: `brew trust --cask jewsh1r/tap/capslockswitcher`.
+
 ### Manual
 
 1.  Go to the [**Releases**](../../releases) page of this repository. Releases are universal Intel and Apple Silicon builds, published by GitHub Actions for every `v*` tag. They are ad-hoc signed, not notarized.
